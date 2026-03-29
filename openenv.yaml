@@ -1,0 +1,23 @@
+name: sepsis-openenv
+version: 0.1.0
+description: Offline sepsis treatment environment built from the MIMIC-III demo cohort and inspired by WD3QNE.
+entrypoint: server.app:app
+client: client.SepsisTreatmentEnv
+action_model: models.SepsisAction
+observation_model: models.SepsisObservation
+state_model: models.SepsisState
+tags:
+  - openenv
+  - healthcare
+  - offline-rl
+  - sepsis
+tasks:
+  - id: easy
+    title: Stabilize Mild Sepsis
+    description: Recommend conservative treatments on low-severity trajectories while avoiding unnecessary vasopressors.
+  - id: medium
+    title: Manage Mixed-Severity Sepsis
+    description: Balance clinician agreement and safety on medium-difficulty sepsis trajectories.
+  - id: hard
+    title: Handle Unstable Sepsis Cases
+    description: Make safe escalation decisions on higher-severity and less stable trajectories.

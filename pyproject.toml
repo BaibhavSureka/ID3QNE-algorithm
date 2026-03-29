@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sepsis-openenv"
+version = "0.1.0"
+description = "OpenEnv-compatible offline sepsis treatment environment built from the MIMIC-III demo cohort."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111.0",
+  "uvicorn>=0.30.0",
+  "pydantic>=2.7.0",
+  "numpy>=1.26.0",
+  "pandas>=2.2.0",
+  "requests>=2.32.0",
+  "openai>=1.40.0",
+  "openenv-core>=0.1.0",
+]
+
+[tool.setuptools]
+py-modules = [
+  "client",
+  "models",
+  "tasks",
+  "graders",
+  "openenv_compat",
+]
+
+[tool.setuptools.packages.find]
+include = ["server"]
