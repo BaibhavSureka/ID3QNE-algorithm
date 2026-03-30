@@ -19,6 +19,19 @@ ENV_DATA_DIR = ROOT / "env_data"
 DATASET_PATH = ENV_DATA_DIR / "processed_demo_dataset.pkl"
 FEATURES_PATH = ENV_DATA_DIR / "selected_features.json"
 
+LAB_FIELDS = {
+    "lactate": "Arterial_lactate",
+    "wbc": "WBC_count",
+    "creatinine": "Creatinine",
+    "bicarbonate": "Bicarbonate",
+    "platelets": "Platelets_count",
+    "bilirubin": "Total_bili",
+}
+LAB_OPTIONS = list(LAB_FIELDS.keys())
+TREATMENT_OPTIONS = ["monitor", "fluids", "vasopressors", "combination"]
+VITAL_FIELDS = ["HR", "MeanBP", "RR", "Temp_C", "SpO2", "Shock_Index"]
+DEMOGRAPHIC_FIELDS = ["age", "is_male"]
+
 
 def load_processed_assets() -> tuple[pd.DataFrame, list[str]]:
     if DATASET_PATH.exists() and FEATURES_PATH.exists():
@@ -66,9 +79,10 @@ class SepsisTreatmentEnvironment(Environment):
             step_count=0,
             max_steps=0,
             cumulative_reward=0.0,
-            agreement_sum=0.0,
             safety_violations=0,
             terminal_outcome="ongoing",
+            requested_labs=[],
+            visible_labs={},
             history=[],
         )
 
@@ -88,13 +102,19 @@ class SepsisTreatmentEnvironment(Environment):
     def metadata(self) -> dict[str, Any]:
         return {
             "name": "sepsis-openenv",
-            "description": "Offline sepsis treatment environment built from the MIMIC-III demo cohort.",
+            "description": "Sequential sepsis management environment with partial observability over logged ICU trajectories.",
             "tasks": self.available_tasks(),
             "selected_features": self.selected_features,
             "action_space": {
-                "fluid_bin": "0-4",
-                "pressor_bin": "0-4",
-                "total_actions": 25,
+                "action_type": ["request_lab", "request_treatment", "monitor"],
+                "lab_type": LAB_OPTIONS,
+                "treatment_type": TREATMENT_OPTIONS,
+                "suspect_sepsis": "boolean",
+            },
+            "observation_space": {
+                "vitals": VITAL_FIELDS,
+                "visible_labs": LAB_OPTIONS,
+                "demographics": DEMOGRAPHIC_FIELDS,
             },
         }
 
@@ -111,7 +131,21 @@ class SepsisTreatmentEnvironment(Environment):
             episode = self.dataset[self.dataset["icustay_id"] == stay_id].sort_values("bin_idx").reset_index(drop=True)
         return episode
 
+    def _row_float(self, row: pd.Series, key: str) -> float:
+        value = row.get(key, 0.0)
+        if pd.isna(value):
+            return 0.0
+        return float(value)
+
     def _make_observation(self, row: pd.Series, *, reward: float, done: bool) -> SepsisObservation:
+        hidden_lab_columns = set(LAB_FIELDS.values())
+        vitals = {name: self._row_float(row, name) for name in VITAL_FIELDS}
+        demographics = {name: self._row_float(row, name) for name in DEMOGRAPHIC_FIELDS}
+        context_features = {
+            name: self._row_float(row, name)
+            for name in self.selected_features
+            if name not in hidden_lab_columns and name not in VITAL_FIELDS
+        }
         return SepsisObservation(
             episode_id=self._state.episode_id,
             task_id=self._task.task_id,
@@ -119,14 +153,82 @@ class SepsisTreatmentEnvironment(Environment):
             patient_id=int(row["icustay_id"]),
             step_index=int(self._cursor),
             max_steps=int(len(self._episode)),
-            severity_proxy=float(row["severity_proxy"]),
+            severity_proxy=self._row_float(row, "severity_proxy"),
             mortality_risk_flag=int(row["mortality"]),
-            features={name: float(row[name]) for name in self.selected_features},
+            demographics=demographics,
+            vitals=vitals,
+            context_features=context_features,
+            visible_labs=dict(self._state.visible_labs),
+            requested_labs=list(self._state.requested_labs),
+            available_lab_options=LAB_OPTIONS,
+            available_treatment_options=TREATMENT_OPTIONS,
             cumulative_reward=float(self._state.cumulative_reward),
             last_reward=float(reward),
             done=done,
             reward=float(reward),
         )
+
+    def _priority_labs(self, row: pd.Series) -> set[str]:
+        priority: set[str] = set()
+        severity = self._row_float(row, "severity_proxy")
+        shock = self._row_float(row, "Shock_Index")
+        mean_bp = self._row_float(row, "MeanBP")
+        lactate = self._row_float(row, "Arterial_lactate")
+        wbc = self._row_float(row, "WBC_count")
+        creatinine = self._row_float(row, "Creatinine")
+        bicarbonate = self._row_float(row, "Bicarbonate")
+        platelets = self._row_float(row, "Platelets_count")
+        bilirubin = self._row_float(row, "Total_bili")
+
+        if severity >= 1.0 or shock > 0.1 or mean_bp < 0.0 or lactate > 0.25:
+            priority.update(["lactate", "wbc"])
+        if creatinine > 0.15 or self._row_float(row, "BUN_Creatinine_Ratio") > 0.2:
+            priority.add("creatinine")
+        if bicarbonate < -0.15 or self._row_float(row, "Arterial_pH") < -0.15:
+            priority.add("bicarbonate")
+        if platelets < -0.2:
+            priority.add("platelets")
+        if bilirubin > 0.15:
+            priority.add("bilirubin")
+        if not priority:
+            priority.add("lactate")
+        return priority
+
+    def _sepsis_signal(self, row: pd.Series) -> bool:
+        return bool(
+            self._row_float(row, "severity_proxy") >= 1.0
+            or self._row_float(row, "Shock_Index") > 0.1
+            or self._row_float(row, "MeanBP") < 0.0
+            or self._row_float(row, "Arterial_lactate") > 0.25
+            or self._row_float(row, "WBC_count") > 0.2
+        )
+
+    def _target_treatment(self, row: pd.Series) -> str:
+        clinician_fluid = int(row["fluid_bin"])
+        clinician_pressor = int(row["pressor_bin"])
+        severity = self._row_float(row, "severity_proxy")
+        if clinician_pressor >= 2 and clinician_fluid >= 2:
+            return "combination"
+        if clinician_pressor >= 2:
+            return "vasopressors"
+        if clinician_fluid >= 2 or severity >= 1.25 or self._row_float(row, "Shock_Index") > 0.15:
+            return "fluids"
+        return "monitor"
+
+    def _treatment_match(self, chosen: str, target: str) -> float:
+        if chosen == target:
+            return 1.0
+        close_pairs = {
+            ("fluids", "combination"),
+            ("combination", "fluids"),
+            ("vasopressors", "combination"),
+            ("combination", "vasopressors"),
+            ("monitor", "fluids"),
+            ("fluids", "monitor"),
+        }
+        if (chosen, target) in close_pairs:
+            return 0.5
+        return 0.0
 
     def _compute_reward(
         self,
@@ -135,40 +237,87 @@ class SepsisTreatmentEnvironment(Environment):
         action: SepsisAction,
         is_terminal: bool,
     ) -> tuple[float, dict[str, Any]]:
-        clinician_fluid = int(row["fluid_bin"])
-        clinician_pressor = int(row["pressor_bin"])
-        fluid_gap = abs(action.fluid_bin - clinician_fluid)
-        pressor_gap = abs(action.pressor_bin - clinician_pressor)
-        agreement = max(0.0, 1.0 - ((fluid_gap + pressor_gap) / 8.0))
-
-        severity_now = float(row["severity_proxy"])
-        severity_next = float(next_row["severity_proxy"]) if next_row is not None else severity_now
-        progress = float(0.15 * np.tanh(severity_now - severity_next))
-
-        safety_penalty = 0.0
+        reward = 0.0
         unsafe = False
-        if severity_now <= 1.0 and action.pressor_bin >= clinician_pressor + 2:
-            safety_penalty += 0.35
-            unsafe = True
-        if severity_now >= 2.0 and action.pressor_bin == 0 and clinician_pressor >= 2:
-            safety_penalty += 0.25
-            unsafe = True
-        if action.fluid_bin >= clinician_fluid + 3:
-            safety_penalty += 0.10
-            unsafe = True
-        if severity_now >= 2.0 and action.fluid_bin == 0 and clinician_fluid >= 2:
-            safety_penalty += 0.10
-            unsafe = True
+        sepsis_signal = self._sepsis_signal(row)
+        priority_labs = self._priority_labs(row)
+        target_treatment = self._target_treatment(row)
+        severity_now = self._row_float(row, "severity_proxy")
+        severity_next = self._row_float(next_row, "severity_proxy") if next_row is not None else severity_now
+        progress = float(0.15 * np.tanh(severity_now - severity_next))
+        stability_score = 1.0 if severity_next <= severity_now else max(0.0, 1.0 - min(severity_next - severity_now, 1.0))
 
-        reward = (0.6 * agreement) + progress - safety_penalty
+        detection_credit = 0.0
+        lab_score = 0.0
+        treatment_score = 0.0
+        inefficiency_penalty = 0.0
+        safety_penalty = 0.0
+
+        if action.suspect_sepsis:
+            detection_credit = 1.0 if sepsis_signal else 0.25
+            reward += 0.15 if sepsis_signal else -0.05
+        elif sepsis_signal and self._cursor <= 1:
+            reward -= 0.05
+
+        if action.action_type == "request_lab":
+            if action.lab_type in LAB_FIELDS:
+                duplicate_lab = action.lab_type in self._state.requested_labs
+                revealed_value = self._row_float(row, LAB_FIELDS[action.lab_type])
+                self._state.visible_labs[action.lab_type] = revealed_value
+                self._state.requested_labs.append(action.lab_type)
+                if duplicate_lab:
+                    inefficiency_penalty += 0.08
+                    reward -= 0.08
+                elif action.lab_type in priority_labs:
+                    lab_score = 1.0
+                    reward += 0.20
+                else:
+                    lab_score = 0.4
+                    reward += 0.05
+                if action.lab_type in {"lactate", "wbc"} and sepsis_signal:
+                    detection_credit = max(detection_credit, 0.8)
+            else:
+                inefficiency_penalty += 0.05
+                reward -= 0.05
+        elif action.action_type == "request_treatment":
+            if action.treatment_type in TREATMENT_OPTIONS:
+                treatment_score = self._treatment_match(action.treatment_type, target_treatment)
+                reward += 0.30 * treatment_score
+                if severity_now <= 0.8 and action.treatment_type in {"vasopressors", "combination"}:
+                    safety_penalty += 0.25
+                    unsafe = True
+                if severity_now >= 2.0 and action.treatment_type == "monitor":
+                    safety_penalty += 0.30
+                    unsafe = True
+                if self._row_float(row, "MeanBP") < -0.2 and action.treatment_type == "monitor":
+                    safety_penalty += 0.10
+                    unsafe = True
+            else:
+                inefficiency_penalty += 0.05
+                reward -= 0.05
+        else:
+            if severity_now >= 1.75:
+                inefficiency_penalty += 0.05
+                reward -= 0.05
+
+        reward += progress
+        reward -= safety_penalty
+        reward -= inefficiency_penalty
+
         if is_terminal:
-            reward += 0.40 if int(row["mortality"]) == 0 else -0.40
+            reward += 0.30 if int(row["mortality"]) == 0 else -0.30
 
         reward = float(np.clip(reward, -1.0, 1.0))
         return reward, {
-            "agreement_score": round(agreement, 4),
+            "detection_credit": round(detection_credit, 4),
+            "lab_score": round(lab_score, 4),
+            "treatment_score": round(treatment_score, 4),
+            "stability_score": round(stability_score, 4),
             "progress_score": round(progress, 4),
             "safety_penalty": round(safety_penalty, 4),
+            "inefficiency_penalty": round(inefficiency_penalty, 4),
+            "target_treatment": target_treatment,
+            "priority_labs": sorted(priority_labs),
             "unsafe": unsafe,
         }
 
@@ -187,9 +336,10 @@ class SepsisTreatmentEnvironment(Environment):
             step_count=0,
             max_steps=int(len(self._episode)),
             cumulative_reward=0.0,
-            agreement_sum=0.0,
             safety_violations=0,
             terminal_outcome="ongoing",
+            requested_labs=[],
+            visible_labs={},
             history=[],
         )
         self._metrics = {}
@@ -207,7 +357,6 @@ class SepsisTreatmentEnvironment(Environment):
         reward, details = self._compute_reward(row, next_row, action, done)
         self._state.step_count += 1
         self._state.cumulative_reward += reward
-        self._state.agreement_sum += details["agreement_score"]
         if details["unsafe"]:
             self._state.safety_violations += 1
         if done:
@@ -216,12 +365,21 @@ class SepsisTreatmentEnvironment(Environment):
         history_row = {
             "step": int(self._cursor),
             "action_index": action.action_index,
-            "fluid_bin": action.fluid_bin,
-            "pressor_bin": action.pressor_bin,
-            "agreement_score": details["agreement_score"],
+            "action_type": action.action_type,
+            "suspect_sepsis": action.suspect_sepsis,
+            "lab_type": action.lab_type,
+            "treatment_type": action.treatment_type,
+            "detection_credit": details["detection_credit"],
+            "lab_score": details["lab_score"],
+            "treatment_score": details["treatment_score"],
+            "stability_score": details["stability_score"],
             "progress_score": details["progress_score"],
             "safety_penalty": details["safety_penalty"],
+            "inefficiency_penalty": details["inefficiency_penalty"],
             "unsafe": details["unsafe"],
+            "severity_proxy": round(self._row_float(row, "severity_proxy"), 4),
+            "target_treatment": details["target_treatment"],
+            "priority_labs": details["priority_labs"],
             "reward": round(reward, 4),
         }
         self._state.history.append(history_row)
@@ -247,6 +405,7 @@ class SepsisTreatmentEnvironment(Environment):
             "task_id": self._task.task_id,
             "current_stay_id": self._state.current_stay_id,
             "cumulative_reward": round(float(self._state.cumulative_reward), 4),
+            "requested_labs": list(self._state.requested_labs),
             "safety_violations": int(self._state.safety_violations),
         }
 

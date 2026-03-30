@@ -13,11 +13,11 @@ tags:
 
 # Sepsis OpenEnv
 
-`Sepsis OpenEnv` is a real-world offline sepsis treatment environment built for the OpenEnv hackathon workflow. It exposes a standard agent loop through `reset()`, `step()`, and `state()` and scores treatment decisions on logged ICU trajectories.
+`Sepsis OpenEnv` is a real-world sequential sepsis management environment built for the OpenEnv hackathon workflow. It exposes a standard agent loop through `reset()`, `step()`, and `state()` and evaluates how well an agent gathers information, chooses treatment, and manages a logged ICU trajectory under partial observability.
 
 It is designed to satisfy the Round 1 submission requirements:
 
-- real-world task: ICU sepsis treatment decisions
+- real-world task: ICU sepsis workup and treatment decisions
 - typed models for action, observation, and state
 - 3 graded tasks: `easy`, `medium`, `hard`
 - meaningful dense rewards with safety penalties
@@ -26,16 +26,18 @@ It is designed to satisfy the Round 1 submission requirements:
 
 ## What The Environment Simulates
 
-At each step, the agent recommends:
+At each step, the agent can:
 
-- an IV fluid dose bin `0..4`
-- a vasopressor dose bin `0..4`
+- request one lab from a small clinically meaningful set
+- request one treatment plan from a small sepsis-management action set
+- optionally mark the current state as suspected sepsis
 
 The environment advances along a logged patient trajectory and rewards the agent for:
 
-- matching sensible treatment intensity
-- making safe decisions for lower-severity cases
-- handling more unstable cases without obviously harmful escalation
+- detecting likely sepsis early
+- requesting informative labs instead of repeatedly querying low-value tests
+- selecting treatment plans that fit the hidden severity pattern in the logged stay
+- avoiding obviously unsafe escalation or under-treatment
 
 This is an offline environment built from a compact processed bundle derived from the local MIMIC-III demo cohort. It is inspired by the WD3QNE sepsis-treatment paper, but the environment itself is purpose-built for OpenEnv evaluation rather than paper reproduction.
 
@@ -44,11 +46,11 @@ This is an offline environment built from a compact processed bundle derived fro
 Task definitions live in [tasks.py](/C:/Users/Baibhav%20Sureka/Videos/ID3QNE-algorithm/tasks.py).
 
 - `easy`
-  Conservative treatment on mild sepsis trajectories with short horizons.
+  Early sepsis workup from partial bedside data with an emphasis on timely lab selection.
 - `medium`
-  Mixed-severity cases with longer trajectories and stronger agreement pressure.
+  Diagnosis plus early treatment initiation after iterative lab requests.
 - `hard`
-  Higher-severity cases where sensible escalation and terminal-outcome handling matter more.
+  Full sepsis management across longer unstable trajectories with stabilization and outcome pressure.
 
 Each task has a deterministic grader in [graders.py](/C:/Users/Baibhav%20Sureka/Videos/ID3QNE-algorithm/graders.py) that returns a score in `[0.0, 1.0]`.
 
@@ -56,9 +58,10 @@ Each task has a deterministic grader in [graders.py](/C:/Users/Baibhav%20Sureka/
 
 Defined in [models.py](/C:/Users/Baibhav%20Sureka/Videos/ID3QNE-algorithm/models.py#L10).
 
-- `fluid_bin`: integer `0..4`
-- `pressor_bin`: integer `0..4`
-- total discrete combinations: `25`
+- `action_type`: `request_lab`, `request_treatment`, or `monitor`
+- `suspect_sepsis`: boolean detection signal
+- `lab_type`: one of `lactate`, `wbc`, `creatinine`, `bicarbonate`, `platelets`, `bilirubin`
+- `treatment_type`: one of `monitor`, `fluids`, `vasopressors`, `combination`
 
 ## Observation Space
 
@@ -71,10 +74,12 @@ Each observation contains:
 - current step and max steps
 - severity proxy
 - mortality flag from the logged stay
-- normalized feature dictionary for the selected 37 features
+- demographics and always-visible vitals
+- visible non-lab context features
+- only the labs explicitly requested so far
 - current cumulative reward and last reward
 
-The hidden logged clinician action is intentionally not exposed in observations.
+Hidden logged treatment choices and unrevealed labs are intentionally not exposed in observations.
 
 ## Reward Design
 
@@ -82,9 +87,11 @@ The reward function is dense, not purely terminal.
 
 Per step:
 
-- positive signal for plausible agreement with the hidden logged clinician action
-- small progress bonus when the next logged state becomes less severe
-- penalties for unsafe escalation or obviously insufficient treatment
+- positive signal for early sepsis suspicion on high-risk states
+- reward for requesting priority labs that fit the current presentation
+- reward for selecting treatment plans that match the hidden severity pattern
+- progress bonus when the next logged state becomes less severe
+- penalties for duplicate low-value labs, unsafe escalation, or obvious under-treatment
 
 At the end of the episode:
 
@@ -147,7 +154,14 @@ It writes reproducible scores to:
 
 - [outputs/baseline_scores.json](/C:/Users/Baibhav%20Sureka/Videos/ID3QNE-algorithm/outputs/baseline_scores.json)
 
-If `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN` are present, the script uses the OpenAI client with those variables. If not, it falls back to a deterministic heuristic policy so the baseline still runs reproducibly.
+If `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN` are present, the script uses the OpenAI client with those variables. If not, it falls back to a deterministic staged baseline that requests key labs first and then selects a treatment plan, so the benchmark still runs reproducibly.
+
+Current deterministic baseline scores from the local run:
+
+- `easy`: `0.93`
+- `medium`: `0.9062`
+- `hard`: `0.8886`
+- mean score: `0.9083`
 
 ## Docker
 

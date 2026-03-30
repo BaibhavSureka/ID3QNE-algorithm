@@ -1,6 +1,6 @@
 name: sepsis-openenv
 version: 0.1.0
-description: Offline sepsis treatment environment built from the MIMIC-III demo cohort and inspired by WD3QNE.
+description: Sequential sepsis management environment with partial observability over logged ICU trajectories.
 entrypoint: server.app:app
 client: client.SepsisTreatmentEnv
 action_model: models.SepsisAction
@@ -13,11 +13,11 @@ tags:
   - sepsis
 tasks:
   - id: easy
-    title: Stabilize Mild Sepsis
-    description: Recommend conservative treatments on low-severity trajectories while avoiding unnecessary vasopressors.
+    title: Early Sepsis Workup
+    description: Identify likely sepsis early and request the most informative initial labs from partial bedside data.
   - id: medium
-    title: Manage Mixed-Severity Sepsis
-    description: Balance clinician agreement and safety on medium-difficulty sepsis trajectories.
+    title: Diagnosis And Early Treatment
+    description: Use iterative lab requests to confirm deterioration and start an appropriate treatment plan early.
   - id: hard
-    title: Handle Unstable Sepsis Cases
-    description: Make safe escalation decisions on higher-severity and less stable trajectories.
+    title: Full Sepsis Management
+    description: Balance workup, treatment escalation, and stabilization across longer unstable sepsis trajectories.

@@ -45,38 +45,49 @@ def build_task_catalog(summary: pd.DataFrame) -> dict[str, TaskConfig]:
     return {
         "easy": TaskConfig(
             task_id="easy",
-            title="Stabilize Mild Sepsis",
+            title="Early Sepsis Workup",
             description=(
-                "Recommend conservative IV fluid and vasopressor bins for low-severity sepsis trajectories "
-                "while avoiding unnecessary escalation."
+                "Identify likely sepsis early and request the most informative initial labs from partial bedside data."
             ),
             min_steps=6,
             max_steps=8,
             preferred_stay_ids=easy_ids,
-            score_weights={"reward": 0.45, "agreement": 0.35, "safety": 0.20},
+            score_weights={"detection": 0.35, "lab_workup": 0.35, "timeliness": 0.20, "safety": 0.10},
         ),
         "medium": TaskConfig(
             task_id="medium",
-            title="Manage Mixed-Severity Sepsis",
+            title="Diagnosis And Early Treatment",
             description=(
-                "Track the clinician policy on medium-complexity sepsis cases while maintaining safe dosing "
-                "decisions over a longer trajectory."
+                "Use iterative lab requests to confirm deterioration and start an appropriate treatment plan early."
             ),
             min_steps=8,
             max_steps=12,
             preferred_stay_ids=medium_ids,
-            score_weights={"reward": 0.40, "agreement": 0.35, "safety": 0.15, "terminal": 0.10},
+            score_weights={
+                "detection": 0.20,
+                "lab_workup": 0.20,
+                "treatment": 0.30,
+                "timeliness": 0.20,
+                "safety": 0.10,
+            },
         ),
         "hard": TaskConfig(
             task_id="hard",
-            title="Handle Unstable Sepsis Cases",
+            title="Full Sepsis Management",
             description=(
-                "Treat higher-severity, less stable sepsis trajectories with sensible escalation while limiting "
-                "unsafe divergence from the logged clinician policy."
+                "Balance workup, treatment escalation, and stabilization across longer unstable sepsis trajectories "
+                "while avoiding unsafe actions."
             ),
             min_steps=8,
             max_steps=16,
             preferred_stay_ids=hard_ids,
-            score_weights={"reward": 0.35, "agreement": 0.25, "safety": 0.15, "terminal": 0.25},
+            score_weights={
+                "detection": 0.15,
+                "lab_workup": 0.15,
+                "treatment": 0.20,
+                "stability": 0.20,
+                "safety": 0.10,
+                "outcome": 0.20,
+            },
         ),
     }

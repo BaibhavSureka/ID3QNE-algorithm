@@ -11,7 +11,14 @@ def main() -> None:
     env = SepsisTreatmentEnv(task_id="easy")
     reset_result = env.reset()
     assert reset_result.observation.task_id == "easy"
-    step_result = env.step(SepsisAction(fluid_bin=1, pressor_bin=0, rationale="smoke"))
+    step_result = env.step(
+        SepsisAction(
+            action_type="request_lab",
+            suspect_sepsis=True,
+            lab_type="lactate",
+            rationale="smoke",
+        )
+    )
     assert step_result.reward is not None
     state = env.state()
     assert state.step_count == 1
@@ -22,7 +29,15 @@ def main() -> None:
     assert client.get("/metadata").status_code == 200
     reset_response = client.post("/reset", json={"task_id": "medium"})
     assert reset_response.status_code == 200
-    step_response = client.post("/step", json={"fluid_bin": 2, "pressor_bin": 1, "rationale": "smoke"})
+    step_response = client.post(
+        "/step",
+        json={
+            "action_type": "request_treatment",
+            "suspect_sepsis": True,
+            "treatment_type": "fluids",
+            "rationale": "smoke",
+        },
+    )
     assert step_response.status_code == 200
     state_response = client.get("/state")
     assert state_response.status_code == 200
