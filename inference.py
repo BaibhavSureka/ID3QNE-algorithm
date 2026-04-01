@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from pathlib import Path
 
 from openai import OpenAI
@@ -12,43 +13,127 @@ from models import SepsisAction, SepsisObservation
 
 OUTPUT_DIR = Path("outputs")
 MAX_STEPS_PER_TASK = {"easy": 8, "medium": 12, "hard": 16}
+EPSILON = 0.1
+RNG = random.Random(7)
+
+
+def curriculum_action(observation: SepsisObservation) -> SepsisAction | None:
+    task_id = observation.task_id
+    step_index = observation.step_index
+
+    if task_id == "easy":
+        if step_index == 0:
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=True,
+                lab_type="lactate",
+                rationale="Curriculum schedule: start with lactate for early workup.",
+            )
+        if step_index == 2:
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=True,
+                lab_type="creatinine",
+                rationale="Curriculum schedule: add renal assessment when the workup broadens.",
+            )
+        return SepsisAction(
+            action_type="monitor",
+            suspect_sepsis=True,
+            rationale="Curriculum schedule: maintain observation after priority labs.",
+        )
+
+    if task_id == "medium":
+        lab_plan = {0: "lactate", 1: "wbc", 2: "creatinine", 3: "bicarbonate"}
+        if step_index in lab_plan:
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=True,
+                lab_type=lab_plan[step_index],
+                rationale=f"Curriculum schedule: collect {lab_plan[step_index]} before treatment.",
+            )
+        treatment_type = "fluids" if step_index <= 6 else "monitor"
+        return SepsisAction(
+            action_type="request_treatment",
+            suspect_sepsis=True,
+            treatment_type=treatment_type,
+            rationale="Curriculum schedule: shift from early support to monitoring.",
+        )
+
+    if task_id == "hard":
+        if step_index == 0:
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=True,
+                lab_type="lactate",
+                rationale="Curriculum schedule: start unstable trajectory with lactate.",
+            )
+        if step_index == 1:
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=True,
+                lab_type="creatinine",
+                rationale="Curriculum schedule: check renal strain before extended management.",
+            )
+        treatment_type = "monitor" if step_index in {3, 4} else "fluids"
+        return SepsisAction(
+            action_type="request_treatment",
+            suspect_sepsis=True,
+            treatment_type=treatment_type,
+            rationale="Curriculum schedule: alternate stabilization and support across the harder case.",
+        )
+
+    return None
 
 
 def heuristic_action(observation: SepsisObservation) -> SepsisAction:
+    scheduled_action = curriculum_action(observation)
+    if scheduled_action is not None:
+        return scheduled_action
+
     severity = observation.severity_proxy
     shock = observation.vitals.get("Shock_Index", 0.0)
     mean_bp = observation.vitals.get("MeanBP", 0.0)
     visible_labs = observation.visible_labs
     requested_labs = set(observation.requested_labs)
 
-    if not observation.requested_labs:
-        return SepsisAction(
-            action_type="request_lab",
-            suspect_sepsis=severity >= 1.0 or shock > 0.1 or mean_bp < 0.0,
-            lab_type="lactate",
-            rationale="Start the workup with lactate under partial observability.",
-        )
-    if "wbc" not in requested_labs and severity >= 0.75:
-        return SepsisAction(
-            action_type="request_lab",
-            suspect_sepsis=True,
-            lab_type="wbc",
-            rationale="Follow the initial sepsis workup with WBC.",
-        )
-    if severity >= 1.5 and "creatinine" not in requested_labs:
-        return SepsisAction(
-            action_type="request_lab",
-            suspect_sepsis=True,
-            lab_type="creatinine",
-            rationale="Check renal dysfunction before escalating treatment.",
-        )
+    if RNG.random() < EPSILON:
+        unseen_labs = [lab for lab in ["lactate", "wbc", "creatinine", "bicarbonate"] if lab not in requested_labs]
+        if unseen_labs:
+            lab_choice = unseen_labs[0]
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=severity >= 1.0 or shock > 0.1 or mean_bp < 0.0,
+                lab_type=lab_choice,
+                rationale="Exploration step",
+            )
+
+    lab_priority_order = ["lactate", "wbc", "creatinine", "bicarbonate"]
+    for lab in lab_priority_order:
+        should_request = False
+        if lab == "lactate":
+            should_request = lab not in requested_labs
+        elif lab == "wbc":
+            should_request = lab not in requested_labs and (severity >= 0.75 or shock > 0.08)
+        elif lab == "creatinine":
+            should_request = lab not in requested_labs and severity >= 1.2
+        elif lab == "bicarbonate":
+            should_request = lab not in requested_labs and (severity >= 1.5 or mean_bp < -0.1)
+
+        if should_request:
+            return SepsisAction(
+                action_type="request_lab",
+                suspect_sepsis=severity >= 1.0 or shock > 0.1 or mean_bp < 0.0,
+                lab_type=lab,
+                rationale=f"Exploring informative lab: {lab}",
+            )
 
     lactate = visible_labs.get("lactate", 0.0) or 0.0
+    bicarbonate = visible_labs.get("bicarbonate", 0.0) or 0.0
     if severity < 0.8 and mean_bp >= -0.1:
         treatment_type = "monitor"
     elif severity >= 2.0 or mean_bp < -0.2:
         treatment_type = "combination" if lactate > 0.25 else "vasopressors"
-    elif shock > 0.15 or severity >= 1.1:
+    elif shock > 0.15 or severity >= 1.1 or bicarbonate < -0.15:
         treatment_type = "fluids"
     else:
         treatment_type = "monitor"
@@ -57,7 +142,7 @@ def heuristic_action(observation: SepsisObservation) -> SepsisAction:
         action_type="request_treatment",
         suspect_sepsis=severity >= 1.0 or lactate > 0.25,
         treatment_type=treatment_type,
-        rationale="Deterministic staged baseline for lab workup and treatment selection.",
+        rationale="Improved staged policy with exploration and severity awareness.",
     )
 
 
@@ -101,6 +186,14 @@ def model_action(client: OpenAI | None, model_name: str | None, observation: Sep
 
 
 def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dict:
+    global EPSILON
+    if task_id == "easy":
+        EPSILON = 0.05
+    elif task_id == "medium":
+        EPSILON = 0.1
+    else:
+        EPSILON = 0.15
+
     env = SepsisTreatmentEnv(base_url=os.getenv("ENV_BASE_URL"), task_id=task_id)
     result = env.reset()
     observation = result.observation
@@ -108,6 +201,16 @@ def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dic
 
     for _ in range(MAX_STEPS_PER_TASK[task_id]):
         action = model_action(client, model_name, observation)
+        print(
+            {
+                "task": task_id,
+                "step": observation.step_index,
+                "severity": round(observation.severity_proxy, 4),
+                "action": action.action_type,
+                "lab": action.lab_type,
+                "treatment": action.treatment_type,
+            }
+        )
         result = env.step(action)
         observation = result.observation
         final_info = result.info

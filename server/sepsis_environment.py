@@ -72,6 +72,7 @@ class SepsisTreatmentEnvironment(Environment):
         self._cursor = 0
         self._task: TaskConfig = self.task_catalog[self.default_task_id]
         self._metrics: dict[str, Any] = {}
+        self._visited_state_actions: set[tuple[str, str]] = set()
         self._state = SepsisState(
             episode_id=str(uuid.uuid4()),
             task_id=self.default_task_id,
@@ -252,6 +253,7 @@ class SepsisTreatmentEnvironment(Environment):
         treatment_score = 0.0
         inefficiency_penalty = 0.0
         safety_penalty = 0.0
+        novelty_bonus = 0.0
 
         if action.suspect_sepsis:
             detection_credit = 1.0 if sepsis_signal else 0.25
@@ -300,6 +302,25 @@ class SepsisTreatmentEnvironment(Environment):
                 inefficiency_penalty += 0.05
                 reward -= 0.05
 
+        state_id = f"{int(row['icustay_id'])}_{self._cursor}"
+        action_id = f"{action.action_type}_{action.lab_type}_{action.treatment_type}"
+        state_action_key = (state_id, action_id)
+        if state_action_key not in self._visited_state_actions:
+            novelty_bonus = 0.03
+            reward += novelty_bonus
+            self._visited_state_actions.add(state_action_key)
+        else:
+            inefficiency_penalty += 0.01
+            reward -= 0.01
+
+        if sepsis_signal and self._cursor <= 2 and action.suspect_sepsis:
+            detection_credit = max(detection_credit, 1.0)
+            reward += 0.05
+
+        if severity_now > 1.5 and action.action_type == "monitor":
+            safety_penalty += 0.05
+            reward -= 0.05
+
         reward += progress
         reward -= safety_penalty
         reward -= inefficiency_penalty
@@ -314,6 +335,7 @@ class SepsisTreatmentEnvironment(Environment):
             "treatment_score": round(treatment_score, 4),
             "stability_score": round(stability_score, 4),
             "progress_score": round(progress, 4),
+            "novelty_bonus": round(novelty_bonus, 4),
             "safety_penalty": round(safety_penalty, 4),
             "inefficiency_penalty": round(inefficiency_penalty, 4),
             "target_treatment": target_treatment,
@@ -343,6 +365,7 @@ class SepsisTreatmentEnvironment(Environment):
             history=[],
         )
         self._metrics = {}
+        self._visited_state_actions = set()
         return self._make_observation(current_row, reward=0.0, done=False)
 
     def step(self, action: SepsisAction) -> SepsisObservation:
@@ -374,6 +397,7 @@ class SepsisTreatmentEnvironment(Environment):
             "treatment_score": details["treatment_score"],
             "stability_score": details["stability_score"],
             "progress_score": details["progress_score"],
+            "novelty_bonus": details["novelty_bonus"],
             "safety_penalty": details["safety_penalty"],
             "inefficiency_penalty": details["inefficiency_penalty"],
             "unsafe": details["unsafe"],
