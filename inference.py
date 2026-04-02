@@ -5,6 +5,7 @@ import os
 import random
 from pathlib import Path
 
+import numpy as np
 from openai import OpenAI
 
 from client import SepsisTreatmentEnv
@@ -194,6 +195,46 @@ def model_action(client: OpenAI | None, model_name: str | None, observation: Sep
         return heuristic_action(observation)
 
 
+def compute_action_entropy(action_history: list[str]) -> float:
+    if not action_history:
+        return 0.0
+
+    action_lengths = [len(action.split()) for action in action_history]
+    counts = np.bincount(action_lengths)
+    nonzero_counts = counts[counts > 0]
+    probabilities = nonzero_counts / len(action_history)
+    entropy = float(-np.sum(probabilities * np.log2(probabilities)))
+    if abs(entropy) < 1e-12:
+        return 0.0
+    return entropy if entropy > 0 else 0.0
+
+
+def compute_dense_reward_metrics(
+    reward_trace: list[float],
+    step_count: int,
+    max_steps: int,
+    action_history: list[str],
+) -> dict[str, float | int]:
+    nonzero_rewards = [reward for reward in reward_trace if reward != 0]
+
+    return {
+        "steps_taken": step_count,
+        "total_reward": float(sum(reward_trace)),
+        "reward_density": float(sum(1 for reward in reward_trace if reward > 0) / len(reward_trace))
+        if reward_trace
+        else 0.0,
+        "avg_reward_per_step": float(np.mean(reward_trace)) if reward_trace else 0.0,
+        "reward_variance": float(np.var(reward_trace)) if reward_trace else 0.0,
+        "max_single_reward": float(max(reward_trace)) if reward_trace else 0.0,
+        "episode_length_efficiency": float(step_count / max_steps) if max_steps else 0.0,
+        "positive_reward_ratio": float(
+            sum(1 for reward in reward_trace if reward > 0) / max(1, len(nonzero_rewards))
+        ),
+        "unique_actions": len(set(action_history)),
+        "action_entropy": compute_action_entropy(action_history),
+    }
+
+
 def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dict:
     global EPSILON
     if task_id == "easy":
@@ -208,6 +249,7 @@ def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dic
     observation = result.observation
     final_info = result.info
     reward_trace: list[float] = []
+    action_history: list[str] = []
     success = False
     step_count = 0
 
@@ -216,14 +258,16 @@ def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dic
     try:
         for step_number in range(1, MAX_STEPS_PER_TASK[task_id] + 1):
             action = model_action(client, model_name, observation)
+            formatted_action = format_action(action)
             result = env.step(action)
             observation = result.observation
             final_info = result.info
             reward = float(result.reward or 0.0)
             reward_trace.append(reward)
+            action_history.append(formatted_action)
             step_count = step_number
             print(
-                f"[STEP] step={step_number} action={format_action(action)} "
+                f"[STEP] step={step_number} action={formatted_action} "
                 f"reward={reward:.2f} done={str(result.done).lower()} error=null"
             )
             if result.done:
@@ -238,6 +282,12 @@ def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dic
         print(f"[END] success={str(success).lower()} steps={step_count} rewards={rewards_repr}")
 
     metrics = final_info.get("metrics", {})
+    dense_metrics = compute_dense_reward_metrics(
+        reward_trace=reward_trace,
+        step_count=step_count,
+        max_steps=MAX_STEPS_PER_TASK[task_id],
+        action_history=action_history,
+    )
     return {
         "task_id": task_id,
         "episode_id": state.episode_id,
@@ -252,6 +302,7 @@ def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dic
         "safety_violation_rate": metrics.get("safety_violation_rate", 0.0),
         "outcome": metrics.get("outcome", 0.0),
         "steps": metrics.get("steps", state.step_count),
+        **dense_metrics,
     }
 
 
@@ -269,6 +320,11 @@ def main() -> None:
     summary = {
         "results": results,
         "mean_score": round(sum(item["score"] for item in results) / len(results), 4),
+        "mean_reward_density": round(sum(item["reward_density"] for item in results) / len(results), 4),
+        "mean_avg_reward_per_step": round(sum(item["avg_reward_per_step"] for item in results) / len(results), 4),
+        "mean_reward_variance": round(sum(item["reward_variance"] for item in results) / len(results), 4),
+        "mean_positive_reward_ratio": round(sum(item["positive_reward_ratio"] for item in results) / len(results), 4),
+        "mean_action_entropy": round(sum(item["action_entropy"] for item in results) / len(results), 4),
         "model_name": model_name or "heuristic-baseline",
     }
     output_path = OUTPUT_DIR / "baseline_scores.json"
