@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from client import SepsisTreatmentEnv
 from models import SepsisAction
+from openenv_compat import OPENENV_AVAILABLE
 from server.app import app
 
 
@@ -29,14 +30,15 @@ def main() -> None:
     assert client.get("/metadata").status_code == 200
     reset_response = client.post("/reset", json={"task_id": "medium"})
     assert reset_response.status_code == 200
+    step_payload = {
+        "action_type": "request_treatment",
+        "suspect_sepsis": True,
+        "treatment_type": "fluids",
+        "rationale": "smoke",
+    }
     step_response = client.post(
         "/step",
-        json={
-            "action_type": "request_treatment",
-            "suspect_sepsis": True,
-            "treatment_type": "fluids",
-            "rationale": "smoke",
-        },
+        json={"action": step_payload} if OPENENV_AVAILABLE else step_payload,
     )
     assert step_response.status_code == 200
     state_response = client.get("/state")

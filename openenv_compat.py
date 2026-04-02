@@ -22,7 +22,6 @@ try:
     State = OpenEnvState
     Environment = OpenEnvEnvironment
     EnvClient = OpenEnvEnvClient
-    StepResult = OpenEnvStepResult
     create_app = openenv_create_app
     OPENENV_AVAILABLE = True
 except Exception:
@@ -51,13 +50,6 @@ except Exception:
 
     TObservation = TypeVar("TObservation")
 
-    @dataclass
-    class StepResult(Generic[TObservation]):
-        observation: TObservation
-        reward: Optional[float] = None
-        done: bool = False
-        info: dict[str, Any] = field(default_factory=dict)
-
     class EnvClient(Generic[TObservation]):
         def __init__(self, base_url: str | None = None, **_: Any):
             self.base_url = base_url
@@ -70,6 +62,17 @@ except Exception:
 
         def __exit__(self, exc_type, exc, tb) -> None:
             self.close()
+
+
+TObservation = TypeVar("TObservation")
+
+
+@dataclass
+class StepResult(Generic[TObservation]):
+    observation: TObservation
+    reward: Optional[float] = None
+    done: bool = False
+    info: dict[str, Any] = field(default_factory=dict)
 
 
 __all__ = [
