@@ -17,6 +17,9 @@ MAX_STEPS_PER_TASK = {"easy": 8, "medium": 12, "hard": 16}
 EPSILON = 0.1
 RNG = random.Random(7)
 ENV_NAME = "sepsis-openenv"
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+DEFAULT_API_BASE_URL = "https://router.huggingface.co/v1"
+DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct"
 
 
 def format_action(action: SepsisAction) -> str:
@@ -308,8 +311,8 @@ def run_task(task_id: str, client: OpenAI | None, model_name: str | None) -> dic
 
 def main() -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
-    api_base_url = os.getenv("API_BASE_URL")
-    model_name = os.getenv("MODEL_NAME")
+    api_base_url = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
+    model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
     hf_token = os.getenv("HF_TOKEN")
 
     llm_client = None
