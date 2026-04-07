@@ -790,24 +790,36 @@ def main() -> None:
         api_key = os.environ.get("API_KEY")
         model_name = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 
+        print(f"[DEBUG] API_BASE_URL={api_base_url is not None}, API_KEY={api_key is not None}, MODEL_NAME={model_name}")
+
         llm_client = None
         if api_base_url and api_key:
+            print(f"[INFO] Initializing LLM client with API_BASE_URL")
             llm_client = OpenAI(
                 base_url=api_base_url,
                 api_key=api_key,
             )
+            print(f"[INFO] LLM client created successfully")
         else:
-            print("[WARNING] API_BASE_URL or API_KEY not found. Falling back to heuristic.")
+            print("[WARNING] API_BASE_URL or API_KEY not found. Cannot create LLM client.")
 
         if args.episodes < 1:
             raise SystemExit("--episodes must be at least 1.")
 
+        # If validator provided credentials, force LLM mode
+        active_policy = args.model
+        if args.model == "auto":
+            if llm_client is not None:
+                active_policy = "llm"
+                print(f"[INFO] Auto mode with LLM credentials available - using LLM policy")
+            else:
+                active_policy = "heuristic"
+                print(f"[INFO] Auto mode without LLM credentials - using heuristic policy")
+        
         if args.model == "llm" and llm_client is None:
             raise SystemExit("LLM mode requires API_BASE_URL and API_KEY environment variables.")
 
-        active_policy = args.model
-        if args.model == "auto":
-            active_policy = "llm" if llm_client is not None else "heuristic"
+        print(f"[INFO] Active policy: {active_policy}, Model name: {model_name}")
 
         all_results: list[dict[str, Any]] = []
         episode_summaries: list[dict[str, Any]] = []
@@ -831,7 +843,6 @@ def main() -> None:
                 )
             except Exception as exc:
                 print(f"[ERROR] Episode {episode_index} failed: {str(exc)}", file=__import__('sys').stderr)
-                # Continue to next episode instead of crashing
 
         if not all_results:
             raise ValueError("No results were generated from any episode or task.")
