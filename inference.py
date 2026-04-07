@@ -622,31 +622,31 @@ def run_task(
             final_info = result.info
         except Exception as exc:
             policy_errors.append(f"Environment initialization failed: {str(exc)}")
-            raise
-
-        for step_number in range(1, MAX_STEPS_PER_TASK[task_id] + 1):
-            action, source, error_message = choose_action(policy_mode, client, model_name, observation)
-            formatted_action = format_action(action)
-            result = env.step(action)
-            observation = result.observation
-            final_info = result.info
-            reward = float(result.reward or 0.0)
-            reward_trace.append(reward)
-            action_history.append(formatted_action)
-            policy_sources[source] += 1
-            if error_message:
-                policy_errors.append(error_message)
-            step_count = step_number
-            log_step(
-                step=step_number,
-                action=formatted_action,
-                reward=reward,
-                done=result.done,
-                error=error_message,
-            )
-            if result.done:
-                success = True
-                break
+            success = False
+        else:
+            for step_number in range(1, MAX_STEPS_PER_TASK[task_id] + 1):
+                action, source, error_message = choose_action(policy_mode, client, model_name, observation)
+                formatted_action = format_action(action)
+                result = env.step(action)
+                observation = result.observation
+                final_info = result.info
+                reward = float(result.reward or 0.0)
+                reward_trace.append(reward)
+                action_history.append(formatted_action)
+                policy_sources[source] += 1
+                if error_message:
+                    policy_errors.append(error_message)
+                step_count = step_number
+                log_step(
+                    step=step_number,
+                    action=formatted_action,
+                    reward=reward,
+                    done=result.done,
+                    error=error_message,
+                )
+                if result.done:
+                    success = True
+                    break
     except Exception as exc:
         policy_errors.append(str(exc))
         success = False
@@ -667,35 +667,72 @@ def run_task(
         score = float(final_info.get("metrics", {}).get("score", 0.0))
         log_end(success=success, steps=step_count, score=score, rewards=reward_trace)
 
-    metrics = final_info.get("metrics", {})
-    dense_metrics = compute_dense_reward_metrics(
-        reward_trace=reward_trace,
-        step_count=step_count,
-        max_steps=MAX_STEPS_PER_TASK[task_id],
-        action_history=action_history,
-    )
-    return {
-        "task_id": task_id,
-        "episode_id": state.episode_id,
-        "score": metrics.get("score", 0.0),
-        "avg_reward": metrics.get("avg_reward", 0.0),
-        "detection": metrics.get("detection", 0.0),
-        "lab_workup": metrics.get("lab_workup", 0.0),
-        "treatment": metrics.get("treatment", 0.0),
-        "timeliness": metrics.get("timeliness", 0.0),
-        "stability": metrics.get("stability", 0.0),
-        "safety": metrics.get("safety", 0.0),
-        "safety_violation_rate": metrics.get("safety_violation_rate", 0.0),
-        "safety_violations": metrics.get("safety_violations", 0),
-        "outcome": metrics.get("outcome", 0.0),
-        "steps": metrics.get("steps", state.step_count),
-        "episode_index": episode_index,
-        "policy_mode": policy_mode,
-        "policy_sources": dict(policy_sources),
-        "policy_error_count": len(policy_errors),
-        "policy_last_error": policy_errors[-1] if policy_errors else None,
-        **dense_metrics,
-    }
+    try:
+        metrics = final_info.get("metrics", {})
+        dense_metrics = compute_dense_reward_metrics(
+            reward_trace=reward_trace,
+            step_count=step_count,
+            max_steps=MAX_STEPS_PER_TASK[task_id],
+            action_history=action_history,
+        )
+        return {
+            "task_id": task_id,
+            "episode_id": state.episode_id,
+            "score": metrics.get("score", 0.0),
+            "avg_reward": metrics.get("avg_reward", 0.0),
+            "detection": metrics.get("detection", 0.0),
+            "lab_workup": metrics.get("lab_workup", 0.0),
+            "treatment": metrics.get("treatment", 0.0),
+            "timeliness": metrics.get("timeliness", 0.0),
+            "stability": metrics.get("stability", 0.0),
+            "safety": metrics.get("safety", 0.0),
+            "safety_violation_rate": metrics.get("safety_violation_rate", 0.0),
+            "safety_violations": metrics.get("safety_violations", 0),
+            "outcome": metrics.get("outcome", 0.0),
+            "steps": metrics.get("steps", state.step_count),
+            "episode_index": episode_index,
+            "policy_mode": policy_mode,
+            "policy_sources": dict(policy_sources),
+            "policy_error_count": len(policy_errors),
+            "policy_last_error": policy_errors[-1] if policy_errors else None,
+            **dense_metrics,
+        }
+    except Exception as exc:
+        policy_errors.append(f"Error constructing result dict: {str(exc)}")
+        # Return minimal valid result dict on failure
+        return {
+            "task_id": task_id,
+            "episode_id": getattr(state, 'episode_id', 'unknown'),
+            "score": 0.0,
+            "avg_reward": 0.0,
+            "detection": 0.0,
+            "lab_workup": 0.0,
+            "treatment": 0.0,
+            "timeliness": 0.0,
+            "stability": 0.0,
+            "safety": 0.0,
+            "safety_violation_rate": 0.0,
+            "safety_violations": 0,
+            "outcome": 0.0,
+            "steps": step_count,
+            "episode_index": episode_index,
+            "policy_mode": policy_mode,
+            "policy_sources": dict(policy_sources),
+            "policy_error_count": len(policy_errors),
+            "policy_last_error": policy_errors[-1] if policy_errors else None,
+            "steps_taken": step_count,
+            "total_reward": 0.0,
+            "reward_count": 0,
+            "positive_rewards_count": 0,
+            "reward_density": 0.0,
+            "avg_reward_per_step": 0.0,
+            "reward_variance": 0.0,
+            "max_single_reward": 0.0,
+            "episode_length_efficiency": 0.0,
+            "positive_reward_ratio": 0.0,
+            "unique_actions": 0,
+            "action_entropy": 0.0,
+        }
 
 
 def summarize_runs(
@@ -712,27 +749,27 @@ def summarize_runs(
     for result in all_results:
         policy_source_totals.update(result.get("policy_sources", {}))
 
-    total_reward_count = sum(result["reward_count"] for result in all_results)
-    total_positive_rewards = sum(result["positive_rewards_count"] for result in all_results)
-    total_steps = sum(result["steps_taken"] for result in all_results)
-    total_safety_violations = sum(result["safety_violations"] for result in all_results)
+    total_reward_count = sum(result.get("reward_count", 0) for result in all_results)
+    total_positive_rewards = sum(result.get("positive_rewards_count", 0) for result in all_results)
+    total_steps = sum(result.get("steps_taken", 0) for result in all_results)
+    total_safety_violations = sum(result.get("safety_violations", 0) for result in all_results)
 
     return {
         "results": all_results,
         "episode_summaries": per_episode_results,
-        "mean_score": round(float(np.mean([item["score"] for item in all_results])), 4),
-        "score_std": round(float(np.std([item["score"] for item in all_results])), 4),
-        "mean_score_std": round(float(np.std([item["mean_score"] for item in per_episode_results])), 4)
+        "mean_score": round(float(np.mean([item.get("score", 0.0) for item in all_results])), 4),
+        "score_std": round(float(np.std([item.get("score", 0.0) for item in all_results])), 4),
+        "mean_score_std": round(float(np.std([item.get("mean_score", 0.0) for item in per_episode_results])), 4)
         if per_episode_results
         else 0.0,
-        "mean_reward_density": round(float(np.mean([item["reward_density"] for item in all_results])), 4),
+        "mean_reward_density": round(float(np.mean([item.get("reward_density", 0.0) for item in all_results])), 4),
         "global_reward_density": round(float(total_positive_rewards / total_reward_count), 4)
         if total_reward_count
         else 0.0,
-        "mean_avg_reward_per_step": round(float(np.mean([item["avg_reward_per_step"] for item in all_results])), 4),
-        "mean_reward_variance": round(float(np.mean([item["reward_variance"] for item in all_results])), 4),
-        "mean_positive_reward_ratio": round(float(np.mean([item["positive_reward_ratio"] for item in all_results])), 4),
-        "mean_action_entropy": round(float(np.mean([item["action_entropy"] for item in all_results])), 4),
+        "mean_avg_reward_per_step": round(float(np.mean([item.get("avg_reward_per_step", 0.0) for item in all_results])), 4),
+        "mean_reward_variance": round(float(np.mean([item.get("reward_variance", 0.0) for item in all_results])), 4),
+        "mean_positive_reward_ratio": round(float(np.mean([item.get("positive_reward_ratio", 0.0) for item in all_results])), 4),
+        "mean_action_entropy": round(float(np.mean([item.get("action_entropy", 0.0) for item in all_results])), 4),
         "safety_violation_rate": round(float(total_safety_violations / total_steps), 4) if total_steps else 0.0,
         "total_runs": len(all_results),
         "episodes": len(per_episode_results),
@@ -744,56 +781,71 @@ def summarize_runs(
 
 
 def main() -> None:
-    args = parse_args()
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    api_base_url = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
-    model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
+    try:
+        args = parse_args()
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        api_base_url = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL)
+        model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 
-    llm_client = None
-    if api_base_url and model_name and api_key:
-        llm_client = OpenAI(base_url=api_base_url, api_key=api_key)
+        llm_client = None
+        if api_base_url and model_name and api_key:
+            llm_client = OpenAI(base_url=api_base_url, api_key=api_key)
 
-    if args.episodes < 1:
-        raise SystemExit("--episodes must be at least 1.")
+        if args.episodes < 1:
+            raise SystemExit("--episodes must be at least 1.")
 
-    if args.model == "llm" and llm_client is None:
-        raise SystemExit("LLM mode requires OPENAI_API_KEY or HF_TOKEN plus API_BASE_URL and MODEL_NAME.")
+        if args.model == "llm" and llm_client is None:
+            raise SystemExit("LLM mode requires OPENAI_API_KEY or HF_TOKEN plus API_BASE_URL and MODEL_NAME.")
 
-    active_policy = args.model
-    if args.model == "auto":
-        active_policy = "llm" if llm_client is not None else "heuristic"
+        active_policy = args.model
+        if args.model == "auto":
+            active_policy = "llm" if llm_client is not None else "heuristic"
 
-    all_results: list[dict[str, Any]] = []
-    episode_summaries: list[dict[str, Any]] = []
-    for episode_index in range(args.episodes):
-        episode_results = [
-            run_task(task_id, active_policy, llm_client, model_name, episode_index) for task_id in TASK_IDS
-        ]
-        all_results.extend(episode_results)
-        episode_steps = sum(item["steps_taken"] for item in episode_results)
-        episode_safety_violations = sum(item["safety_violations"] for item in episode_results)
-        episode_summaries.append(
-            {
-                "episode_index": episode_index,
-                "mean_score": round(float(np.mean([item["score"] for item in episode_results])), 4),
-                "mean_reward_density": round(float(np.mean([item["reward_density"] for item in episode_results])), 4),
-                "safety_violation_rate": round(float(episode_safety_violations / episode_steps), 4)
-                if episode_steps
-                else 0.0,
-            }
+        all_results: list[dict[str, Any]] = []
+        episode_summaries: list[dict[str, Any]] = []
+        for episode_index in range(args.episodes):
+            try:
+                episode_results = [
+                    run_task(task_id, active_policy, llm_client, model_name, episode_index) for task_id in TASK_IDS
+                ]
+                all_results.extend(episode_results)
+                episode_steps = sum(item.get("steps_taken", 0) for item in episode_results)
+                episode_safety_violations = sum(item.get("safety_violations", 0) for item in episode_results)
+                episode_summaries.append(
+                    {
+                        "episode_index": episode_index,
+                        "mean_score": round(float(np.mean([item.get("score", 0.0) for item in episode_results])), 4),
+                        "mean_reward_density": round(float(np.mean([item.get("reward_density", 0.0) for item in episode_results])), 4),
+                        "safety_violation_rate": round(float(episode_safety_violations / episode_steps), 4)
+                        if episode_steps
+                        else 0.0,
+                    }
+                )
+            except Exception as exc:
+                print(f"[ERROR] Episode {episode_index} failed: {str(exc)}", file=__import__('sys').stderr)
+                # Continue to next episode instead of crashing
+
+        if not all_results:
+            raise ValueError("No results were generated from any episode or task.")
+
+        summary = summarize_runs(
+            all_results=all_results,
+            per_episode_results=episode_summaries,
+            requested_policy=args.model,
+            active_policy=active_policy,
+            model_name=model_name if active_policy == "llm" else active_policy,
         )
-
-    summary = summarize_runs(
-        all_results=all_results,
-        per_episode_results=episode_summaries,
-        requested_policy=args.model,
-        active_policy=active_policy,
-        model_name=model_name if active_policy == "llm" else active_policy,
-    )
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"[FATAL] Unhandled exception in main(): {str(exc)}", file=__import__('sys').stderr)
+        import traceback
+        traceback.print_exc(file=__import__('sys').stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
