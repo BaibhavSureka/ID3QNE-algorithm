@@ -601,10 +601,10 @@ def run_task(
     else:
         EPSILON = 0.15
 
-    env = SepsisTreatmentEnv(base_url=os.getenv("ENV_BASE_URL"), task_id=task_id)
-    result = env.reset()
-    observation = result.observation
-    final_info = result.info
+    env = None
+    observation = None
+    final_info = {}
+    state = None
     reward_trace: list[float] = []
     action_history: list[str] = []
     policy_sources: Counter[str] = Counter()
@@ -615,6 +615,15 @@ def run_task(
     log_start(task=task_id, env=ENV_NAME, model=model_name or policy_mode)
 
     try:
+        try:
+            env = SepsisTreatmentEnv(base_url=os.getenv("ENV_BASE_URL"), task_id=task_id)
+            result = env.reset()
+            observation = result.observation
+            final_info = result.info
+        except Exception as exc:
+            policy_errors.append(f"Environment initialization failed: {str(exc)}")
+            raise
+
         for step_number in range(1, MAX_STEPS_PER_TASK[task_id] + 1):
             action, source, error_message = choose_action(policy_mode, client, model_name, observation)
             formatted_action = format_action(action)
@@ -642,8 +651,19 @@ def run_task(
         policy_errors.append(str(exc))
         success = False
     finally:
-        state = env.state()
-        env.close()
+        if env is not None:
+            try:
+                state = env.state()
+                env.close()
+            except Exception as exc:
+                policy_errors.append(f"Error during environment cleanup: {str(exc)}")
+                if state is None:
+                    state = type('obj', (object,), {'episode_id': 'unknown', 'step_count': step_count})()
+        else:
+            state = type('obj', (object,), {'episode_id': 'unknown', 'step_count': step_count})()
+        
+        if not final_info:
+            final_info = {}
         score = float(final_info.get("metrics", {}).get("score", 0.0))
         log_end(success=success, steps=step_count, score=score, rewards=reward_trace)
 
