@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,11 @@ def log_step(step: int, action: str, reward: float, done: bool, error: str | Non
 def log_end(success: bool, steps: int, score: float, rewards: list[float]) -> None:
     rewards_repr = ",".join(f"{reward:.2f}" for reward in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_repr}")
+
+
+def log_diagnostic(message: str) -> None:
+    if os.getenv("INFERENCE_DEBUG"):
+        print(message, file=sys.stderr)
 
 
 def curriculum_action(observation: SepsisObservation) -> SepsisAction | None:
@@ -798,23 +804,26 @@ def main() -> None:
         args = parse_args()
         OUTPUT_DIR.mkdir(exist_ok=True)
         
-        # Use validator-provided API credentials (LiteLLM proxy)
-        api_base_url = os.environ.get("API_BASE_URL")
-        api_key = os.environ.get("API_KEY")
-        model_name = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+        # Use validator-provided credentials when present, with safe defaults only for endpoint/model.
+        api_base_url = os.environ.get("API_BASE_URL", DEFAULT_API_BASE_URL)
+        api_key = os.environ.get("HF_TOKEN") or os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY")
+        model_name = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 
-        print(f"[DEBUG] API_BASE_URL={api_base_url is not None}, API_KEY={api_key is not None}, MODEL_NAME={model_name}")
+        log_diagnostic(
+            f"[DEBUG] API_BASE_URL={api_base_url is not None}, "
+            f"API_KEY={api_key is not None}, MODEL_NAME={model_name}"
+        )
 
         llm_client = None
         if api_base_url and api_key:
-            print(f"[INFO] Initializing LLM client with API_BASE_URL")
+            log_diagnostic("[INFO] Initializing LLM client with API_BASE_URL")
             llm_client = OpenAI(
                 base_url=api_base_url,
                 api_key=api_key,
             )
-            print(f"[INFO] LLM client created successfully")
+            log_diagnostic("[INFO] LLM client created successfully")
         else:
-            print("[WARNING] API_BASE_URL or API_KEY not found. Cannot create LLM client.")
+            log_diagnostic("[WARNING] API_BASE_URL or API_KEY not found. Cannot create LLM client.")
 
         # Ensure at least one request is sent through the provided LiteLLM proxy when credentials exist.
         if llm_client is not None:
@@ -829,10 +838,10 @@ def main() -> None:
                     max_tokens=16,
                     response_format={"type": "json_object"},
                 )
-                print("[INFO] LiteLLM proxy warmup call succeeded")
+                log_diagnostic("[INFO] LiteLLM proxy warmup call succeeded")
             except Exception as exc:
                 # Keep evaluation robust: continue and allow per-step fallbacks.
-                print(f"[WARNING] LiteLLM proxy warmup call failed: {str(exc)}")
+                log_diagnostic(f"[WARNING] LiteLLM proxy warmup call failed: {str(exc)}")
 
         if args.episodes < 1:
             raise SystemExit("--episodes must be at least 1.")
@@ -840,12 +849,12 @@ def main() -> None:
         # FORCE LLM USAGE IF CREDENTIALS EXIST
         if llm_client is not None:
             active_policy = "llm"
-            print("[INFO] Forcing LLM policy (validator requirement)")
+            log_diagnostic("[INFO] Forcing LLM policy (validator requirement)")
         else:
             active_policy = "heuristic"
-            print("[WARNING] No API credentials found, fallback to heuristic")
+            log_diagnostic("[WARNING] No API credentials found, fallback to heuristic")
 
-        print(f"[INFO] Active policy: {active_policy}, Model name: {model_name}")
+        log_diagnostic(f"[INFO] Active policy: {active_policy}, Model name: {model_name}")
 
         all_results: list[dict[str, Any]] = []
         episode_summaries: list[dict[str, Any]] = []
